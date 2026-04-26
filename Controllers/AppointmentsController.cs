@@ -2,6 +2,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
 using System.Data;
+using APBD_TASK6.Exceptions;
 
 namespace APBD_TASK6.Controllers;
 
@@ -131,6 +132,7 @@ public class AppointmentsController : ControllerBase
     [HttpPost]
 public async Task<IActionResult> CreateAppointment(CreateAppointmentRequestDto request)
 {
+    try { 
     if (string.IsNullOrWhiteSpace(request.Reason) || request.Reason.Length > 250)
         return BadRequest(new { message = "Reason is required and must be <= 250 characters." });
 
@@ -175,7 +177,7 @@ public async Task<IActionResult> CreateAppointment(CreateAppointmentRequestDto r
 
         var conflict = (int)await checkConflict.ExecuteScalarAsync();
         if (conflict > 0)
-            return Conflict(new { message = "Doctor already has an appointment at this time." });
+            throw new AppointmentConflictException("Doctor already has an appointment at this time.");
     }
 
     // insert
@@ -196,9 +198,15 @@ public async Task<IActionResult> CreateAppointment(CreateAppointmentRequestDto r
 
     return Created($"/api/appointments/{newId}", new { id = newId });
 }
+    catch (AppointmentConflictException ex)
+    {
+        return Conflict(new { message = ex.Message });
+    }
+}
 [HttpPut("{idAppointment:int}")]
 public async Task<IActionResult> UpdateAppointment(int idAppointment, UpdateAppointmentRequestDto request)
 {
+    try { 
     if (!new[] { "Scheduled", "Completed", "Cancelled" }.Contains(request.Status))
         return BadRequest(new { message = "Invalid status." });
 
@@ -259,7 +267,7 @@ public async Task<IActionResult> UpdateAppointment(int idAppointment, UpdateAppo
         conflictCmd.Parameters.Add("@Id", SqlDbType.Int).Value = idAppointment;
 
         if ((int)await conflictCmd.ExecuteScalarAsync() > 0)
-            return Conflict(new { message = "Doctor has another appointment at this time." });
+            throw new AppointmentConflictException("Doctor has another appointment at this time.");
     }
     
     await using var command = new SqlCommand(
@@ -286,6 +294,11 @@ public async Task<IActionResult> UpdateAppointment(int idAppointment, UpdateAppo
     await command.ExecuteNonQueryAsync();
 
     return Ok(new { message = "Updated successfully." });
+}
+    catch (AppointmentConflictException ex)
+    {
+        return Conflict(new { message = ex.Message });
+    }
 }
 [HttpDelete("{idAppointment:int}")]
 public async Task<IActionResult> DeleteAppointment(int idAppointment)
