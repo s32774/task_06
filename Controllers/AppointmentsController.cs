@@ -196,4 +196,95 @@ public async Task<IActionResult> CreateAppointment(CreateAppointmentRequestDto r
 
     return Created($"/api/appointments/{newId}", new { id = newId });
 }
+[HttpPut("{idAppointment:int}")]
+public async Task<IActionResult> UpdateAppointment(int idAppointment, UpdateAppointmentRequestDto request)
+{
+    if (!new[] { "Scheduled", "Completed", "Cancelled" }.Contains(request.Status))
+        return BadRequest(new { message = "Invalid status." });
+
+    if (string.IsNullOrWhiteSpace(request.Reason) || request.Reason.Length > 250)
+        return BadRequest(new { message = "Reason must be <= 250 characters." });
+
+    await using var connection = new SqlConnection(_connectionString);
+    await connection.OpenAsync();
+
+    string currentStatus;
+    DateTime currentDate;
+
+    await using (var checkCmd = new SqlCommand(
+        "SELECT Status, AppointmentDate FROM dbo.Appointments WHERE IdAppointment = @Id", connection))
+    {
+        checkCmd.Parameters.Add("@Id", SqlDbType.Int).Value = idAppointment;
+
+        await using var reader = await checkCmd.ExecuteReaderAsync();
+
+        if (!await reader.ReadAsync())
+            return NotFound(new { message = "Appointment not found." });
+
+        currentStatus = reader.GetString(0);
+        currentDate = reader.GetDateTime(1);
+    }
+
+    if (currentStatus == "Completed" && request.AppointmentDate != currentDate)
+        return Conflict(new { message = "Cannot change date of completed appointment." });
+
+    await using (var checkPatient = new SqlCommand(
+        "SELECT COUNT(1) FROM dbo.Patients WHERE IdPatient = @Id AND IsActive = 1", connection))
+    {
+        checkPatient.Parameters.Add("@Id", SqlDbType.Int).Value = request.IdPatient;
+        if ((int)await checkPatient.ExecuteScalarAsync() == 0)
+            return BadRequest(new { message = "Patient invalid." });
+    }
+
+    await using (var checkDoctor = new SqlCommand(
+        "SELECT COUNT(1) FROM dbo.Doctors WHERE IdDoctor = @Id AND IsActive = 1", connection))
+    {
+        checkDoctor.Parameters.Add("@Id", SqlDbType.Int).Value = request.IdDoctor;
+        if ((int)await checkDoctor.ExecuteScalarAsync() == 0)
+            return BadRequest(new { message = "Doctor invalid." });
+    }
+
+    await using (var conflictCmd = new SqlCommand(
+        """
+        SELECT COUNT(1)
+        FROM dbo.Appointments
+        WHERE IdDoctor = @Doc
+          AND AppointmentDate = @Date
+          AND IdAppointment <> @Id
+          AND Status = 'Scheduled'
+        """, connection))
+    {
+        conflictCmd.Parameters.Add("@Doc", SqlDbType.Int).Value = request.IdDoctor;
+        conflictCmd.Parameters.Add("@Date", SqlDbType.DateTime2).Value = request.AppointmentDate;
+        conflictCmd.Parameters.Add("@Id", SqlDbType.Int).Value = idAppointment;
+
+        if ((int)await conflictCmd.ExecuteScalarAsync() > 0)
+            return Conflict(new { message = "Doctor has another appointment at this time." });
+    }
+    
+    await using var command = new SqlCommand(
+        """
+        UPDATE dbo.Appointments
+        SET IdPatient = @IdPatient,
+            IdDoctor = @IdDoctor,
+            AppointmentDate = @Date,
+            Status = @Status,
+            Reason = @Reason,
+            InternalNotes = @Notes
+        WHERE IdAppointment = @Id
+        """, connection);
+
+    command.Parameters.Add("@IdPatient", SqlDbType.Int).Value = request.IdPatient;
+    command.Parameters.Add("@IdDoctor", SqlDbType.Int).Value = request.IdDoctor;
+    command.Parameters.Add("@Date", SqlDbType.DateTime2).Value = request.AppointmentDate;
+    command.Parameters.Add("@Status", SqlDbType.NVarChar, 30).Value = request.Status;
+    command.Parameters.Add("@Reason", SqlDbType.NVarChar, 250).Value = request.Reason;
+    command.Parameters.Add("@Notes", SqlDbType.NVarChar, 500).Value =
+        (object?)request.InternalNotes ?? DBNull.Value;
+    command.Parameters.Add("@Id", SqlDbType.Int).Value = idAppointment;
+
+    await command.ExecuteNonQueryAsync();
+
+    return Ok(new { message = "Updated successfully." });
+}
 }
