@@ -287,4 +287,39 @@ public async Task<IActionResult> UpdateAppointment(int idAppointment, UpdateAppo
 
     return Ok(new { message = "Updated successfully." });
 }
+[HttpDelete("{idAppointment:int}")]
+public async Task<IActionResult> DeleteAppointment(int idAppointment)
+{
+    await using var connection = new SqlConnection(_connectionString);
+    await connection.OpenAsync();
+
+    string status;
+
+    await using (var checkCommand = new SqlCommand(
+                     "SELECT Status FROM dbo.Appointments WHERE IdAppointment = @IdAppointment",
+                     connection))
+    {
+        checkCommand.Parameters.Add("@IdAppointment", SqlDbType.Int).Value = idAppointment;
+
+        var result = await checkCommand.ExecuteScalarAsync();
+
+        if (result is null)
+            return NotFound(new { message = "Appointment not found." });
+
+        status = result.ToString()!;
+    }
+
+    if (status == "Completed")
+        return Conflict(new { message = "Completed appointments cannot be deleted." });
+
+    await using var deleteCommand = new SqlCommand(
+        "DELETE FROM dbo.Appointments WHERE IdAppointment = @IdAppointment",
+        connection);
+
+    deleteCommand.Parameters.Add("@IdAppointment", SqlDbType.Int).Value = idAppointment;
+
+    await deleteCommand.ExecuteNonQueryAsync();
+
+    return NoContent();
+}
 }
